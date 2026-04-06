@@ -46,11 +46,30 @@ class LLMEngine:
         self.scheduler.add(seq)
 
     def step(self):
-        seqs, is_prefill = self.scheduler.schedule()
-        token_ids = self.model_runner.call("run", seqs, is_prefill)
-        self.scheduler.postprocess(seqs, token_ids)
-        outputs = [(seq.seq_id, seq.completion_token_ids) for seq in seqs if seq.is_finished]
-        num_tokens = sum(len(seq) for seq in seqs) if is_prefill else -len(seqs)
+        prefill_seqs, decode_seqs = self.scheduler.schedule()
+
+        # Run model: returns one token per sequence (prefill first, decode second)
+        token_ids = self.model_runner.call("run", prefill_seqs, decode_seqs)
+
+        self.scheduler.postprocess(prefill_seqs, decode_seqs, token_ids)
+
+        # Collect finished sequences
+        all_seqs = prefill_seqs + decode_seqs
+        outputs = [
+            (seq.seq_id, seq.completion_token_ids)
+            for seq in all_seqs
+            if seq.is_finished
+        ]
+
+        # For throughput reporting: count tokens processed
+        # Prefill tokens = sum of computed tokens (chunk or full prompt)
+        prefill_tokens = sum(
+            seq.chunk_offset - seq.num_cached_tokens
+            for seq in prefill_seqs
+        )
+        decode_tokens = len(decode_seqs)
+        num_tokens = prefill_tokens if prefill_tokens > 0 else -decode_tokens
+
         return outputs, num_tokens
 
     def is_finished(self):
